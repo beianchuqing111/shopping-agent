@@ -1,0 +1,12 @@
+[Unit]
+Description=Shopping Agent Kafka Worker
+After=network.target
+[Service]
+User=shopping
+WorkingDirectory=/home/shopping/shopping-agent
+EnvironmentFile=/etc/shopping-agent.env
+ExecStart=/home/shopping/shopping-agent/.venv/bin/python -m shopping.worker
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

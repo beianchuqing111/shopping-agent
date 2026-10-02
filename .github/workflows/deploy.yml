@@ -1,0 +1,29 @@
+name: Manual SSH Deploy
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci && npm test && npm run build
+        working-directory: frontend
+      - name: Package release
+        run: tar -czf release.tgz shopping frontend/dist pyproject.toml uv.lock
+      - name: SSH approved target
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          scp release.tgz "$USER@$HOST:shopping-release.tgz"
+          ssh "$USER@$HOST" 'set -eu; mkdir -p ~/shopping-agent; tar -xzf ~/shopping-release.tgz -C ~/shopping-agent; cd ~/shopping-agent; uv sync --locked --no-dev; sudo systemctl restart shopping-agent shopping-agent-worker; curl --fail --retry 10 --retry-delay 3 --retry-connrefused http://127.0.0.1:8000/health'

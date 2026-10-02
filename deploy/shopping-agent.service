@@ -1,0 +1,12 @@
+[Unit]
+Description=Shopping Agent API
+After=network.target
+[Service]
+User=shopping
+WorkingDirectory=/home/shopping/shopping-agent
+EnvironmentFile=/etc/shopping-agent.env
+ExecStart=/home/shopping/shopping-agent/.venv/bin/uvicorn shopping.api:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
