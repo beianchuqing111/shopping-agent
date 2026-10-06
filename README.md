@@ -15,12 +15,17 @@ FastAPI + PostgreSQL + Kafka KRaft + React/Vite 的**自建演示电商**：从�
 - 结算：收货人/手机号/详细地址表单 + 前端校验 + 服务端价格与库存校验
 - 订单：订单列表、订单详情、状态时间线（待支付→已支付→已发货→已完成）、模拟支付、取消订单
 - 智能导购：自然语言提需求 → 服务端解析成检索条件 → 命中商品 + 工具调用记录 + 多商品对比
+- 在线客服（页面右下角常驻悬浮球，点开即聊）：意图识别 + 知识库 + **实时查订单与商品** + 转人工工单
+  - 能答：订单状态与发货进度（按会话隔离，查不到就转人工）、商品价格与库存、运费/时效/退换货/保修/发票/优惠等规则
+  - 规则类回答全部标注「演示规则」，事实类回答一律实时查库，不编造；答不上来的问题自动建工单（`TK` 开头）并在聊天里回执
+  - 打开商品页/订单页时会出现上下文快捷问题（如「问问这件商品」）
 
 商家/运营后台（`/#/admin`）
 
 - 令牌登录：`X-Admin-Token` 请求头，令牌只存在于服务端环境变量 `ADMIN_TOKEN`
 - 商品管理：新建商品、改价格/库存、上架/下架、按名称/SKU/品牌筛选
 - 订单管理：查看全部订单、对已支付订单发货
+- 客服工单：查看「在线客服」转人工生成的工单（含对话上下文与关联订单）、关闭工单
 
 接口一览
 
@@ -38,6 +43,9 @@ FastAPI + PostgreSQL + Kafka KRaft + React/Vite 的**自建演示电商**：从�
 | POST | `/api/sessions/{sid}/orders` | 创建订单（服务端价格/库存快照，支持收货信息） |
 | GET | `/api/sessions/{sid}/orders` · `/orders/{id}` | 订单列表 / 订单详情 |
 | POST | `/api/sessions/{sid}/orders/{id}/pay` · `/cancel` | 演示支付（按订单扣库存）/ 取消 |
+| POST | `/api/sessions/{sid}/support` | 智能客服：意图识别 + 实时数据 + 转人工工单 |
+| GET | `/api/support/faq` | 客服知识库快捷问题 |
+| GET | `/api/admin/tickets` · `POST /api/admin/tickets/{id}/close` | 客服工单列表 / 关闭工单 |
 | POST | `/api/admin/product-events` | 商品事件入 outbox（需 `X-Admin-Token`，Kafka 消费后生效） |
 | GET/POST/PATCH | `/api/admin/products` · `/api/admin/products/{id}` | 后台商品列表 / 新建 / 修改 |
 | GET | `/api/admin/orders` · `POST /api/admin/orders/{id}/ship` | 全部订单 / 发货 |
@@ -83,16 +91,17 @@ uv run python -m scripts.run_local
 ## 验证结果（本机实测）
 
 ```text
-Python 全量测试（真实 PostgreSQL + 真实 Kafka）：30 passed, 1 warning in 5.32s
+Python 全量测试（真实 PostgreSQL + 真实 Kafka）：43 passed, 1 warning in 5.93s
 前端单元测试（node --test）：7 passed
-前端生产构建：vite build 通过（~272 KB JS / 18 KB CSS）
+前端生产构建：vite build 通过（~279 KB JS / 21 KB CSS）
 ruff：All checks passed!
-浏览器端到端冒烟（无头 Chrome + CDP）：浏览/搜索/详情/加购、结算校验/下单/支付/订单、后台增改上下架/发货、导购降级与对比 全部通过
+浏览器端到端冒烟（无头 Chrome + CDP）：浏览/搜索/详情/加购、结算校验/下单/支付/订单、后台增改上下架/发货、
+智能客服（悬浮球、知识库回答、订单查询、转人工建工单、商品卡片、后台关闭工单）、导购降级与对比 全部通过
 ```
 
-端到端脚本在 `e2e/`（`smoke-browse.mjs`、`smoke-checkout.mjs`、`smoke-admin-guide.mjs`），用法见 `e2e/README.md`；它们会输出截图与 JSON 断言结果。
+端到端脚本在 `e2e/`（`smoke-browse.mjs`、`smoke-checkout.mjs`、`smoke-admin-guide.mjs`、`smoke-support.mjs`），用法见 `e2e/README.md`；它们会输出截图与 JSON 断言结果。
 
-覆盖到的关键不变量：预算/分类约束不被放宽、缺货商品不参与检索与下单、超库存下单被拒、订单价格取服务端快照且 `request_id` 幂等、支付后库存与销量真实变化、未支付订单不能发货、下架商品从商城消失、管理接口必须带 `X-Admin-Token`、模型不可用降级不报错、种子刷新不覆盖后台改动。
+覆盖到的关键不变量：预算/分类约束不被放宽、缺货商品不参与检索与下单、超库存下单被拒、订单价格取服务端快照且 `request_id` 幂等、支付后库存与销量真实变化、未支付订单不能发货、下架商品从商城消失、管理接口必须带 `X-Admin-Token`、客服只能查到本会话的订单、自动答不上来必须转人工而不是编造、模型不可用降级不报错、种子刷新不覆盖后台改动。
 
 ## CI/CD
 

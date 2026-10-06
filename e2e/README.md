@@ -25,6 +25,7 @@
 node e2e/smoke-browse.mjs        # 首页 / 分类 / 搜索 / 详情 / 加购
 node e2e/smoke-checkout.mjs      # 购物车 / 结算校验 / 下单 / 支付 / 订单列表
 BASE_URL=http://127.0.0.1:58123 ADMIN_TOKEN=local-demo-admin node e2e/smoke-admin-guide.mjs
+ADMIN_TOKEN=local-demo-admin node e2e/smoke-support.mjs   # 悬浮客服 / 工单 / 后台工单页
 ```
 
 可配置环境变量：`BASE_URL`、`ADMIN_TOKEN`、`CDP_PORT`（默认 9333）、`SHOT_DIR`。

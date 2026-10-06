@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
-from shopping import images
+from shopping import images, support
 from shopping.catalog import explicit_patch, search
 from shopping.catalog_data import CATEGORIES
 from shopping.store import Store
@@ -73,6 +73,10 @@ class ProductUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     features: list[str] | None = Field(default=None, max_length=12)
     tags: list[str] | None = Field(default=None, max_length=12)
+
+
+class SupportMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
 
 
 class ProductCreate(BaseModel):
@@ -371,6 +375,43 @@ def create_app(database_url=None, llm=True):
             raise HTTPException(409, f"Order is {current['status']}")
         return {"order": store.update_order(order_id, status="cancelled", note="用户取消")}
 
+    # ---------------- 智能客服 ----------------
+
+    @app.get("/api/support/faq")
+    def support_faq():
+        return {
+            "faq": support.faq_list(),
+            "suggestions": support.BASE_SUGGESTIONS,
+            "note": "规则类回答均为演示规则；订单/商品信息实时查库。",
+        }
+
+    @app.post("/api/sessions/{sid}/support")
+    async def support_chat(sid: str, body: SupportMessage):
+        current = get_session(sid)
+        answer = support.respond(
+            body.message, store, sid, products=published()
+        )
+        answer["mode"] = "rules-and-live-data"
+        if llm and os.environ.get("OPENAI_NEXT_API_KEY"):
+            try:
+                answer["reply"] = await support.polish(answer["reply"], body.message)
+                answer["mode"] = "llm-polished"
+            except (ValueError, RuntimeError, KeyError, IndexError) as e:
+                answer["mode"] = "rules-and-live-data"
+                answer["polish_error"] = f"{type(e).__name__}: {e}"
+        store.append_support(
+            sid,
+            {"role": "user", "content": body.message},
+            current["revision"],
+        )
+        latest = store.session(sid) or {}
+        store.append_support(
+            sid,
+            {"role": "assistant", "content": answer["reply"]},
+            latest.get("revision", current["revision"] + 1),
+        )
+        return answer
+
     # ---------------- 管理后台 ----------------
 
     @app.post("/api/admin/product-events", status_code=202)
@@ -422,6 +463,19 @@ def create_app(database_url=None, llm=True):
     def admin_orders(x_admin_token: str = Header(default="")):
         require_admin(x_admin_token)
         return {"orders": store.all_orders()}
+
+    @app.get("/api/admin/tickets")
+    def admin_tickets(x_admin_token: str = Header(default="")):
+        require_admin(x_admin_token)
+        return {"tickets": store.tickets()}
+
+    @app.post("/api/admin/tickets/{ticket_id}/close", status_code=200)
+    def admin_close_ticket(ticket_id: str, x_admin_token: str = Header(default="")):
+        require_admin(x_admin_token)
+        closed = store.close_ticket(ticket_id, note="客服已回复并关闭（演示）")
+        if closed is None:
+            raise HTTPException(404, "Ticket not found")
+        return {"ticket": closed}
 
     @app.post("/api/admin/orders/{order_id}/ship")
     def admin_ship(order_id: str, x_admin_token: str = Header(default="")):

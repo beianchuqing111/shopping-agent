@@ -14,6 +14,7 @@ export default function Admin() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [tickets, setTickets] = useState([]);
   const [drafts, setDrafts] = useState({});
   const [draftNew, setDraftNew] = useState(EMPTY_NEW);
   const [q, setQ] = useState('');
@@ -25,13 +26,15 @@ export default function Admin() {
     setLoading(true);
     setError('');
     try {
-      const [list, orderList] = await Promise.all([
+      const [list, orderList, ticketList] = await Promise.all([
         api.adminProducts(activeToken),
         api.adminOrders(activeToken),
+        api.adminTickets(activeToken),
       ]);
       setProducts(list.products);
       setCategories(list.categories);
       setOrders(orderList.orders);
+      setTickets(ticketList.tickets);
       setAuthed(true);
       saveAdminToken(activeToken);
     } catch (e) {
@@ -100,6 +103,9 @@ export default function Admin() {
         <div className="admin-tabs">
           <button className={tab === 'products' ? 'chip active' : 'chip'} onClick={() => setTab('products')}>商品管理（{products.length}）</button>
           <button className={tab === 'orders' ? 'chip active' : 'chip'} onClick={() => setTab('orders')}>订单管理（{orders.length}）</button>
+          <button className={tab === 'tickets' ? 'chip active' : 'chip'} onClick={() => setTab('tickets')}>
+            客服工单（{tickets.filter((t) => t.status === 'open').length} 待处理 / {tickets.length}）
+          </button>
           <button className="chip" onClick={() => load(token)}>重新加载</button>
           <button className="chip" onClick={() => { saveAdminToken(''); setToken(''); setAuthed(false); }}>退出</button>
         </div>
@@ -182,7 +188,7 @@ export default function Admin() {
             </tbody>
           </table>
         </>
-      ) : (
+      ) : tab === 'orders' ? (
         <table className="table admin-table">
           <thead>
             <tr><th>订单号</th><th>状态</th><th>商品</th><th>合计</th><th>收货人</th><th>操作</th></tr>
@@ -199,6 +205,40 @@ export default function Admin() {
                 <td>{order.address?.recipient || '—'}</td>
                 <td className="cell-actions">
                   <button className="btn btn-sm btn-primary" disabled={order.status === 'pending_payment' || order.status === 'shipped'} onClick={() => run(() => api.adminShip(token, order.id), '已标记发货')}>发货</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <table className="table admin-table">
+          <thead>
+            <tr><th>工单号</th><th>状态</th><th>主题</th><th>对话上下文</th><th>创建时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {tickets.length === 0 ? (
+              <tr><td colSpan={6}>还没有客服工单。在页面右下角的「在线客服」里点「转人工」或问一个答不上来的问题就会生成。</td></tr>
+            ) : tickets.map((ticket) => (
+              <tr key={ticket.id}>
+                <td>{ticket.no}</td>
+                <td>
+                  <span className={ticket.status === 'open' ? 'status status-pending_payment' : 'status status-completed'}>
+                    {ticket.status === 'open' ? '待处理' : '已关闭'}
+                  </span>
+                </td>
+                <td>{ticket.subject}</td>
+                <td className="cell-context">
+                  {(ticket.messages || []).slice(-3).map((message, index) => (
+                    <small key={index}>{message.role === 'user' ? '用户' : '客服'}：{message.content}</small>
+                  ))}
+                </td>
+                <td>{ticket.created_at?.replace('T', ' ').replace('+00:00', ' UTC')}</td>
+                <td className="cell-actions">
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={ticket.status !== 'open'}
+                    onClick={() => run(() => api.adminCloseTicket(token, ticket.id), `${ticket.no} 已关闭`)}
+                  >关闭工单</button>
                 </td>
               </tr>
             ))}

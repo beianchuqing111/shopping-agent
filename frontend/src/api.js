@@ -57,6 +57,11 @@ export const api = {
   adminOrders: (token) => request('/api/admin/orders', {adminToken: token}),
   adminShip: (token, id) =>
     request(`/api/admin/orders/${encodeURIComponent(id)}/ship`, {method: 'POST', body: {}, adminToken: token}),
+  adminTickets: (token) => request('/api/admin/tickets', {adminToken: token}),
+  adminCloseTicket: (token, id) =>
+    request(`/api/admin/tickets/${encodeURIComponent(id)}/close`, {method: 'POST', body: {}, adminToken: token}),
+  supportFaq: () => request('/api/support/faq'),
+  support: (sid, message) => request(`/api/sessions/${sid}/support`, {method: 'POST', body: {message}}),
 };
 
 export async function ensureSession() {

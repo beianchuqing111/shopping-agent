@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -50,6 +51,13 @@ orders = Table(
     Column("id", String, primary_key=True),
     Column("session_id", String, nullable=False),
     Column("request_id", String, nullable=False, unique=True),
+    Column("data", JSON, nullable=False),
+)
+tickets = Table(
+    "tickets",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("session_id", String, nullable=False),
     Column("data", JSON, nullable=False),
 )
 
@@ -337,6 +345,71 @@ class Store:
                     .where(products.c.id == item["product_id"])
                     .values(data=data, version=version)
                 )
+
+    def create_ticket(self, session_id, subject, messages, contact=None, order_no=None):
+        """客服工单：用户点“转人工”或描述问题无法自动解答时生成。"""
+        ticket = {
+            "id": str(uuid.uuid4()),
+            "no": "TK" + uuid.uuid4().hex[:8].upper(),
+            "session_id": session_id,
+            "subject": subject,
+            "status": "open",
+            "contact": contact,
+            "order_no": order_no,
+            "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "messages": messages[-10:],
+            "notes": [],
+        }
+        with self.engine.begin() as c:
+            c.execute(
+                tickets.insert().values(
+                    id=ticket["id"], session_id=session_id, data=ticket
+                )
+            )
+        return ticket
+
+    def tickets(self):
+        with self.engine.connect() as c:
+            rows = list(c.execute(select(tickets.c.data)).scalars())
+        return sorted(rows, key=lambda t: t.get("created_at", ""), reverse=True)
+
+    def ticket(self, ticket_id):
+        with self.engine.connect() as c:
+            return c.execute(
+                select(tickets.c.data).where(tickets.c.id == ticket_id)
+            ).scalar()
+
+    def close_ticket(self, ticket_id, note=None):
+        with self.engine.begin() as c:
+            row = (
+                c.execute(select(tickets).where(tickets.c.id == ticket_id))
+                .mappings()
+                .first()
+            )
+            if not row:
+                return None
+            data = {**row["data"], "status": "closed"}
+            data.setdefault("notes", []).append(note or "客服已关闭工单")
+            c.execute(
+                update(tickets).where(tickets.c.id == ticket_id).values(data=data)
+            )
+            return data
+
+    def append_support(self, session_id, exchange, revision):
+        """把客服对话存进会话里，方便工单带上上下文。"""
+        current = self.session(session_id)
+        if current is None:
+            return None
+        history = (current.get("support") or []) + [exchange]
+        return self.save_session(
+            session_id,
+            {
+                "constraints": current.get("constraints", {}),
+                "messages": current.get("messages", []),
+                "support": history[-20:],
+            },
+            revision,
+        )
 
     def queue_event(self, event):
         with self.engine.begin() as c:

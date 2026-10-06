@@ -13,6 +13,7 @@ import Orders from './pages/orders.jsx';
 import Order from './pages/order.jsx';
 import Guide from './pages/guide.jsx';
 import Admin from './pages/admin.jsx';
+import SupportWidget from './support.jsx';
 import './style.css';
 
 const NAV = [
@@ -116,6 +117,7 @@ function App() {
       <Header/>
       <main className="app-main"><Routes route={route}/></main>
       <Footer/>
+      <SupportWidget/>
       <Toast/>
     </CartProvider>
   );
