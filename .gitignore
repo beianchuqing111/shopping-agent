@@ -8,3 +8,5 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 *.log
+e2e/shots/
+e2e/results-*.json

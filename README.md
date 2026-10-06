@@ -1,55 +1,108 @@
-# Shopping Agent MVP
+# 选物商城（Shopping Agent）
 
-FastAPI + PostgreSQL + Kafka KRaft + React/Vite 的本地购物助手。当前支持合成目录检索、对比、购物车和幂等创建演示订单；仍不接真实支付、物流或外部电商。LLM 是可选的单次工具调用规划器，不宣称自主循环 Agent。
+FastAPI + PostgreSQL + Kafka KRaft + React/Vite 的**自建演示电商**：从商品浏览到下单、演示支付、发货、后台管理，是一条能真正点完的闭环。
 
-## 数据和边界
+数据全部是自建演示数据（原创商品名/规格/价格），商品图是后端本地生成的 SVG 示意图，**不涉及真实品牌报价、真实支付与真实物流**。
 
-- `shopping/store.py` 的商品全部是原创 synthetic fixtures。名称、品牌、价格、库存、特征均为合成值，不是现实商品报价。缺货条目不会被推荐。
-- 所有响应携带 `synthetic-fixture`、商品 ID 和目录版本。LLM 的自由文本不作为商品证据；展示结果仅来自服务端重新验证的目录。
-- 持久化约束支持预算、类别、品牌。明确中文预算和类别编辑可跨轮更新；模糊追问保留条件。UI 筛选显式字段优先。复杂语言解释仍依赖模型，非安全保证；可通过 UI 修正。费用采用整数分。
-- UUID 会话隔离不是用户认证。默认只绑定 localhost；本地演示无租户鉴权、限流、审计、数据保留策略，不得直接暴露公网。管理员事件接口要求 `X-Admin-Token`，不接受 URL 密钥。
-- 商品事件的 `event_id` 必须对应同一个完整 payload；复用 ID 携带不同 payload 会返回冲突。outbox publisher 先 claim、发送失败可回收，避免多 publisher 并发重复发布。
-- 代码 MIT（见 LICENSE）；依赖遵循各自许可证。Lucide 图标为 UI 占位示意，不是商品照片。未下载或再分发真实商城数据。
+## 功能
+
+消费者端
+
+- 首页：分类入口、限时优惠、热销榜、最新上架
+- 商品列表：关键词搜索、分类筛选、价格区间、5 种排序、分页
+- 商品详情：三视角图集、划线价与折扣、评分/销量/库存、参数表、同类推荐
+- 购物车：本地持久化（localStorage）、数量增减、库存上限、免运费提示
+- 结算：收货人/手机号/详细地址表单 + 前端校验 + 服务端价格与库存校验
+- 订单：订单列表、订单详情、状态时间线（待支付→已支付→已发货→已完成）、模拟支付、取消订单
+- 智能导购：自然语言提需求 → 服务端解析成检索条件 → 命中商品 + 工具调用记录 + 多商品对比
+
+商家/运营后台（`/#/admin`）
+
+- 令牌登录：`X-Admin-Token` 请求头，令牌只存在于服务端环境变量 `ADMIN_TOKEN`
+- 商品管理：新建商品、改价格/库存、上架/下架、按名称/SKU/品牌筛选
+- 订单管理：查看全部订单、对已支付订单发货
+
+接口一览
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/health` | 服务与数据库健康状态、商品数 |
+| GET | `/api/categories` | 分类及各分类在售数量 |
+| GET | `/api/products` | 列表：`q` `category` `sort` `price_min` `price_max` `page` `page_size` |
+| GET | `/api/products/{id}` | 详情 + 同类推荐 |
+| GET | `/api/products/{id}/images/{0..2}.svg` | 本地生成的商品示意图 |
+| GET | `/api/catalog` | 兼容旧前端的简单目录 |
+| POST | `/api/sessions` | 新建会话 |
+| POST | `/api/sessions/{sid}/chat` | 导购：解析条件并检索（模型不可用时降级） |
+| POST | `/api/sessions/{sid}/compare` | 最多 4 件商品对比 |
+| POST | `/api/sessions/{sid}/orders` | 创建订单（服务端价格/库存快照，支持收货信息） |
+| GET | `/api/sessions/{sid}/orders` · `/orders/{id}` | 订单列表 / 订单详情 |
+| POST | `/api/sessions/{sid}/orders/{id}/pay` · `/cancel` | 演示支付（按订单扣库存）/ 取消 |
+| POST | `/api/admin/product-events` | 商品事件入 outbox（需 `X-Admin-Token`，Kafka 消费后生效） |
+| GET/POST/PATCH | `/api/admin/products` · `/api/admin/products/{id}` | 后台商品列表 / 新建 / 修改 |
+| GET | `/api/admin/orders` · `POST /api/admin/orders/{id}/ship` | 全部订单 / 发货 |
+
+前端路由（hash 路由，无额外依赖）：`/`、`/c/:分类`、`/s?q=`、`/p/:id`、`/cart`、`/checkout`、`/orders`、`/order/:id`、`/guide`、`/admin`。
+
+## 数据与边界
+
+- `shopping/catalog_data.py` 是唯一的商品数据源：54 件自建演示商品，覆盖耳机/音箱/键盘/鼠标/显示器/麦克风/配件 7 个分类。
+- 每个商品带 `seed_revision`：改数据后启动服务时，**未被后台编辑过**（version == 1）的行会自动刷新，被改过的行保持不动，不会覆盖运营改动。
+- 商品图由 `shopping/images.py` 按商品 id 稳定生成 3 个视角的 SVG，不下载、不转载任何真实商品图片。
+- 支付是模拟操作：没有接入任何支付渠道，不会扣款；库存按订单真实扣减，用于演示状态流转。发货是演示动作，不接物流。
+- 会话 id 仅用于隔离购物会话，**不是身份认证**：本机演示没有账号体系、限流、审计与数据保留策略，默认只绑定 `127.0.0.1`，不要直接暴露到公网。
+- 导购：模型只做"把话术解析成检索条件"的单次工具调用，商品事实一律来自服务端目录；模型不可用时降级为确定性检索并在界面标注原因，不会 502 掉整个商城。
+- `shopping/store.py` 的 `products` 表是 JSON 文档 + 版本号，`sessions` 用 revision 做乐观锁；订单保存服务端价格快照并用 `request_id` 保证幂等。
 
 ## 安装与运行
 
 ```bash
 cd C:/Users/13917/shopping-agent
 uv sync --locked
-cd frontend
-npm ci
-npm test
-npm run build
-cd ..
+
+# 1) 本机便携 PostgreSQL 与 Kafka（运行时在 .runtime/，已 gitignore；不使用 Docker）
+uv run python -m scripts.start_local_infra postgres
+uv run python -m scripts.start_local_infra kafka
+
+# 2) 前端构建（FastAPI 直接托管 frontend/dist）
+cd frontend && npm ci && npm test && npm run build && cd ..
+
+# 3) 启动服务
 export DATABASE_URL='postgresql+psycopg://shop@127.0.0.1:55432/shopping_agent'
 export KAFKA_BOOTSTRAP_SERVERS='127.0.0.1:59092'
+export ADMIN_TOKEN='设置你自己的管理令牌'
 uv run python -m scripts.run_local
 ```
 
-访问 `http://127.0.0.1:58123/`，API 文档 `/docs`，健康检查 `/health`。`scripts.run_local` 只从当前 Hermes home 的 `.env` 读取 `OPENAI_NEXT_API_KEY` 放入子进程环境，不复制到项目、不修改 Hermes。通过 `PORT` 改端口。普通 `uv run uvicorn shopping.api:app` 未配置 key 时进入确定性演示；配置 `LLM_BASE_URL`（默认 `https://api.openai-next.com/v1`）、`LLM_MODEL`（默认 `gpt-6-sol`）。有 key 但请求失败返回 502，不伪造模型成功。
+访问 `http://127.0.0.1:58123/`，接口文档 `/docs`，健康检查 `/health`，管理后台 `/#/admin`。
 
-单独启动 worker：
+- `scripts/run_local.py` 只把当前 Hermes home `.env` 里的 `OPENAI_NEXT_API_KEY` 放进子进程环境，不复制到项目、不修改其他配置；没有 key 时导购走确定性检索。
+- 单独启动商品事件消费者：`uv run python -m shopping.worker`（`KAFKA_BOOTSTRAP_SERVERS`、`DATABASE_URL` 需显式传入）。
+- `PORT` 可改端口；`uv run python -m scripts.probe_llm` 只花一次真实推理验证模型连通性，且不打印密钥。
 
-```bash
-uv run python -m shopping.worker
-```
-
-本机便携 PostgreSQL 和 Kafka 运行时位于 `.runtime/`，已 gitignore。按用户要求未安装或运行 Docker。
-
-## 验证结果
-
-本机实际执行：
+## 验证结果（本机实测）
 
 ```text
-real PostgreSQL + Kafka integration: 14 passed, 1 warning in 3.22s
-ruff: All checks passed!
-frontend npm test: 1 passed
-frontend npm run build: passed
-LLM tool call and multi-turn constraints: passed previously
+Python 全量测试（真实 PostgreSQL + 真实 Kafka）：30 passed, 1 warning in 5.32s
+前端单元测试（node --test）：7 passed
+前端生产构建：vite build 通过（~272 KB JS / 18 KB CSS）
+ruff：All checks passed!
+浏览器端到端冒烟（无头 Chrome + CDP）：浏览/搜索/详情/加购、结算校验/下单/支付/订单、后台增改上下架/发货、导购降级与对比 全部通过
 ```
 
-集成测试覆盖真实 PostgreSQL 持久化、真实 Kafka outbox→producer→consumer→PG、重复事件、旧版本、DLQ，以及 claim/recovery。SQLite 仅用于快速 API 单元测试。warning 来自 Starlette 对 httpx TestClient 的弃用提醒，非测试失败。
+端到端脚本在 `e2e/`（`smoke-browse.mjs`、`smoke-checkout.mjs`、`smoke-admin-guide.mjs`），用法见 `e2e/README.md`；它们会输出截图与 JSON 断言结果。
+
+覆盖到的关键不变量：预算/分类约束不被放宽、缺货商品不参与检索与下单、超库存下单被拒、订单价格取服务端快照且 `request_id` 幂等、支付后库存与销量真实变化、未支付订单不能发货、下架商品从商城消失、管理接口必须带 `X-Admin-Token`、模型不可用降级不报错、种子刷新不覆盖后台改动。
 
 ## CI/CD
 
-`.github/workflows/ci.yml` 在 push/PR 执行锁定 uv 安装、ruff、pytest、React 测试与生产构建，上传 UI artifact。`.github/workflows/deploy.yml` 仅 `workflow_dispatch`，需要目标服务器和 Secrets；未执行远程部署。GitHub CI 尚未运行，因为项目尚未发布到远程仓库。
+- `.github/workflows/ci.yml`：push/PR 执行锁定 uv 安装、ruff、pytest（CI 里带 PostgreSQL 服务容器；Kafka 集成测试因 CI 未提供 broker 会自动跳过，本机已验证通过）、前端测试与生产构建，并上传构建产物。
+- `.github/workflows/deploy.yml`：仅手动触发，需要目标服务器与 Secrets；仓库里没有执行过远程部署。
+
+## 已知限制与下一步
+
+- 没有账号体系与多租户隔离；会话 id 不是身份认证。
+- 没有接入真实支付/物流/电子面单，订单状态靠演示动作推进。
+- 库存扣减在"支付"这一步，没有预占库存与超时释放。
+- 商品图是 SVG 示意图，不是真实商品照片。
+- 下一步候选：账号与收货地址簿、优惠券与满减、库存预占、支付沙箱联调、商家入驻与结算。

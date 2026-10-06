@@ -85,7 +85,9 @@ def test_product_events_are_idempotent_and_version_ordered(tmp_path):
         s.apply_event({**event, "event_id": "e2", "version": 2, "price_cents": 100})
         == "stale"
     )
-    assert s.products()[0]["price_cents"] == 8800
+    assert s.products() and (
+        next(p for p in s.products() if p["id"] == "demo-h1")["price_cents"] == 8800
+    )
 
 
 def test_reused_event_id_cannot_change_payload(tmp_path):
