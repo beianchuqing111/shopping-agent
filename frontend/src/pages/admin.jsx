@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from 'react';
+import {Fragment, useCallback, useEffect, useState} from 'react';
 import {api} from '../api.js';
 import {Link} from '../link.jsx';
 import {ErrorNote, Loading} from '../ui.jsx';
@@ -15,6 +15,9 @@ export default function Admin() {
   const [categories, setCategories] = useState([]);
   const [orders, setOrders] = useState([]);
   const [tickets, setTickets] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [replies, setReplies] = useState({});
+  const [openedConversation, setOpenedConversation] = useState('');
   const [drafts, setDrafts] = useState({});
   const [draftNew, setDraftNew] = useState(EMPTY_NEW);
   const [q, setQ] = useState('');
@@ -26,15 +29,17 @@ export default function Admin() {
     setLoading(true);
     setError('');
     try {
-      const [list, orderList, ticketList] = await Promise.all([
+      const [list, orderList, ticketList, conversationList] = await Promise.all([
         api.adminProducts(activeToken),
         api.adminOrders(activeToken),
         api.adminTickets(activeToken),
+        api.adminConversations(activeToken),
       ]);
       setProducts(list.products);
       setCategories(list.categories);
       setOrders(orderList.orders);
       setTickets(ticketList.tickets);
+      setConversations(conversationList.conversations);
       setAuthed(true);
       saveAdminToken(activeToken);
     } catch (e) {
@@ -105,6 +110,9 @@ export default function Admin() {
           <button className={tab === 'orders' ? 'chip active' : 'chip'} onClick={() => setTab('orders')}>订单管理（{orders.length}）</button>
           <button className={tab === 'tickets' ? 'chip active' : 'chip'} onClick={() => setTab('tickets')}>
             客服工单（{tickets.filter((t) => t.status === 'open').length} 待处理 / {tickets.length}）
+          </button>
+          <button className={tab === 'conversations' ? 'chip active' : 'chip'} onClick={() => setTab('conversations')}>
+            客服会话（{conversations.length}）
           </button>
           <button className="chip" onClick={() => load(token)}>重新加载</button>
           <button className="chip" onClick={() => { saveAdminToken(''); setToken(''); setAuthed(false); }}>退出</button>
@@ -210,14 +218,14 @@ export default function Admin() {
             ))}
           </tbody>
         </table>
-      ) : (
+      ) : tab === 'tickets' ? (
         <table className="table admin-table">
           <thead>
-            <tr><th>工单号</th><th>状态</th><th>主题</th><th>对话上下文</th><th>创建时间</th><th>操作</th></tr>
+            <tr><th>工单号</th><th>状态</th><th>主题</th><th>对话上下文</th><th>创建时间</th><th>人工回复</th><th>操作</th></tr>
           </thead>
           <tbody>
             {tickets.length === 0 ? (
-              <tr><td colSpan={6}>还没有客服工单。在页面右下角的「在线客服」里点「转人工」或问一个答不上来的问题就会生成。</td></tr>
+              <tr><td colSpan={7}>还没有客服工单。在页面右下角的「在线客服」里点「转人工」或问一个答不上来的问题就会生成。</td></tr>
             ) : tickets.map((ticket) => (
               <tr key={ticket.id}>
                 <td>{ticket.no}</td>
@@ -233,6 +241,38 @@ export default function Admin() {
                   ))}
                 </td>
                 <td>{ticket.created_at?.replace('T', ' ').replace('+00:00', ' UTC')}</td>
+                <td className="cell-reply">
+                  <input
+                    value={replies[ticket.id] || ''}
+                    onChange={(e) => setReplies({...replies, [ticket.id]: e.target.value})}
+                    placeholder="回复用户（会出现在他的客服面板）"
+                    aria-label={`回复工单 ${ticket.no}`}
+                  />
+                  <div className="cell-actions">
+                    <button
+                      className="btn btn-sm btn-primary"
+                      disabled={!(replies[ticket.id] || '').trim()}
+                      onClick={() => run(
+                        async () => {
+                          await api.adminReplyTicket(token, ticket.id, replies[ticket.id].trim());
+                          setReplies({...replies, [ticket.id]: ''});
+                        },
+                        `${ticket.no} 已回复`,
+                      )}
+                    >发送回复</button>
+                    <button
+                      className="btn btn-sm"
+                      disabled={!(replies[ticket.id] || '').trim()}
+                      onClick={() => run(
+                        async () => {
+                          await api.adminReplyTicket(token, ticket.id, replies[ticket.id].trim(), true);
+                          setReplies({...replies, [ticket.id]: ''});
+                        },
+                        `${ticket.no} 已回复并关闭`,
+                      )}
+                    >回复并关闭</button>
+                  </div>
+                </td>
                 <td className="cell-actions">
                   <button
                     className="btn btn-sm btn-primary"
@@ -241,6 +281,52 @@ export default function Admin() {
                   >关闭工单</button>
                 </td>
               </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <table className="table admin-table">
+          <thead>
+            <tr><th>客服会话</th><th>消息数</th><th>最近一条</th><th>最近活跃</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {conversations.length === 0 ? (
+              <tr><td colSpan={5}>还没有客服对话记录。用户在右下角「在线客服」提问后就会出现在这里。</td></tr>
+            ) : conversations.map((conversation) => (
+              <Fragment key={conversation.session_id}>
+                <tr>
+                  <td>{conversation.session_id.slice(0, 8)}</td>
+                  <td>{conversation.message_count}</td>
+                  <td>
+                    <small>{conversation.last_role === 'user' ? '用户' : '客服'}：</small>{conversation.last_content}
+                  </td>
+                  <td>{conversation.last_at ? conversation.last_at.replace('T', ' ').replace('+00:00', ' UTC') : '—'}</td>
+                  <td className="cell-actions">
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => setOpenedConversation(
+                        openedConversation === conversation.session_id ? '' : conversation.session_id,
+                      )}
+                    >
+                      {openedConversation === conversation.session_id ? '收起对话' : '查看对话'}
+                    </button>
+                  </td>
+                </tr>
+                {openedConversation === conversation.session_id ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="transcript">
+                        {conversation.messages.map((message, index) => (
+                          <p key={index} className={message.role === 'user' ? 'from-user' : 'from-agent'}>
+                            <span>{message.role === 'user' ? '用户' : '客服'}</span>
+                            {message.content}
+                          </p>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>

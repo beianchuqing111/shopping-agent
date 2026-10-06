@@ -62,6 +62,14 @@ export const api = {
     request(`/api/admin/tickets/${encodeURIComponent(id)}/close`, {method: 'POST', body: {}, adminToken: token}),
   supportFaq: () => request('/api/support/faq'),
   support: (sid, message) => request(`/api/sessions/${sid}/support`, {method: 'POST', body: {message}}),
+  sessionTickets: (sid) => request(`/api/sessions/${sid}/tickets`),
+  adminReplyTicket: (token, id, message, close = false) =>
+    request(`/api/admin/tickets/${encodeURIComponent(id)}/reply`, {
+      method: 'POST',
+      body: {message, close},
+      adminToken: token,
+    }),
+  adminConversations: (token) => request('/api/admin/conversations', {adminToken: token}),
 };
 
 export async function ensureSession() {

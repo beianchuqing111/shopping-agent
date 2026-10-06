@@ -4,10 +4,12 @@ import {Link} from './link.jsx';
 import {navigate} from './router.js';
 import {useRoute} from './hooks.js';
 import {formatPrice, orderStatusText} from './format.js';
+import {loadSessionId} from './cart.js';
 
 const HISTORY_KEY = 'shopping-agent.support';
 const SEEN_KEY = 'shopping-agent.support-seen';
 const FALLBACK_QUICK = ['查我的订单', '运费怎么算', '可以退货吗？', '转人工'];
+const POLL_MS = 8000;
 
 function loadHistory() {
   try {
@@ -22,9 +24,23 @@ function loadHistory() {
 function saveHistory(messages) {
   try {
     globalThis.localStorage?.setItem(HISTORY_KEY, JSON.stringify(messages.slice(-40)));
+  } catch { /* 忽略存储失败 */ }
+}
+
+function loadSeen() {
+  try {
+    const raw = globalThis.localStorage?.getItem(SEEN_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
   } catch {
-    /* 忽略存储失败 */
+    return new Set();
   }
+}
+
+function saveSeen(seen) {
+  try {
+    globalThis.localStorage?.setItem(SEEN_KEY, JSON.stringify([...seen].slice(-200)));
+  } catch { /* 忽略 */ }
 }
 
 function CardView({card}) {
@@ -40,7 +56,7 @@ function CardView({card}) {
         </ul>
         <div className="support-card-foot">
           <strong>{formatPrice(card.total_cents)}</strong>
-          <Link to={card.link} onClick={() => navigate(card.link)}>查看订单</Link>
+          <Link to={card.link}>查看订单</Link>
         </div>
       </div>
     );
@@ -68,30 +84,89 @@ export default function SupportWidget() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [recentOrder, setRecentOrder] = useState(null);
+  const [unread, setUnread] = useState(0);
   const [pulse, setPulse] = useState(() => {
     try {
-      return globalThis.localStorage?.getItem(SEEN_KEY) !== '1';
+      return globalThis.localStorage?.getItem('shopping-agent.support-intro') !== '1';
     } catch {
       return true;
     }
   });
+  const seenRef = useRef(loadSeen());
   const bottom = useRef(null);
 
   useEffect(() => { saveHistory(messages); }, [messages]);
-  useEffect(() => {
-    bottom.current?.scrollIntoView({block: 'nearest'});
-  }, [messages, open, busy]);
+  useEffect(() => { bottom.current?.scrollIntoView({block: 'nearest'}); }, [messages, open, busy]);
 
+  const refreshRecentOrder = useCallback(async () => {
+    const sid = loadSessionId();
+    if (!sid) {
+      setRecentOrder(null);
+      return;
+    }
+    try {
+      const {orders} = await api.orders(sid);
+      setRecentOrder(orders?.[0] || null);
+    } catch {
+      setRecentOrder(null);
+    }
+  }, []);
+
+  const pollStaffReplies = useCallback(async () => {
+    const sid = loadSessionId();
+    if (!sid) return;
+    let tickets = [];
+    try {
+      ({tickets} = await api.sessionTickets(sid));
+    } catch {
+      return;
+    }
+    const fresh = [];
+    for (const ticket of tickets || []) {
+      for (const message of ticket.messages || []) {
+        if (message.role !== 'staff' || !message.id) continue;
+        if (seenRef.current.has(message.id)) continue;
+        seenRef.current.add(message.id);
+        fresh.push({ticket, message});
+      }
+    }
+    if (!fresh.length) return;
+    saveSeen(seenRef.current);
+    setMessages((current) => [
+      ...current,
+      ...fresh.map(({ticket, message}) => ({
+        role: 'agent',
+        staff: true,
+        content: message.content,
+        ticketNo: ticket.no,
+      })),
+    ]);
+    setUnread((count) => count + fresh.length);
+  }, []);
+
+  // 打开面板：拉快捷问题、刷新最近订单、把已展示的人工回复标记为已读
   useEffect(() => {
     if (!open) return;
     api.supportFaq()
       .then((data) => {
         setSuggestions(data.suggestions?.length ? data.suggestions : FALLBACK_QUICK);
-        try { globalThis.localStorage?.setItem(SEEN_KEY, '1'); } catch { /* 忽略 */ }
+        try { globalThis.localStorage?.setItem('shopping-agent.support-intro', '1'); } catch { /* 忽略 */ }
         setPulse(false);
       })
       .catch(() => setSuggestions(FALLBACK_QUICK));
-  }, [open]);
+    refreshRecentOrder();
+    pollStaffReplies();
+    setUnread(0);
+  }, [open, refreshRecentOrder, pollStaffReplies]);
+
+  useEffect(() => { refreshRecentOrder(); }, [route.name, route.id, refreshRecentOrder]);
+
+  // 轮询人工回复：面板关着也能收到，悬浮球上显示未读数
+  useEffect(() => {
+    const timer = setInterval(pollStaffReplies, POLL_MS);
+    return () => clearInterval(timer);
+  }, [pollStaffReplies]);
 
   const contextChip = useMemo(() => {
     if (route.name === 'product' && route.id) {
@@ -117,20 +192,20 @@ export default function SupportWidget() {
         content: answer.reply,
         cards: answer.cards || [],
         ticket: answer.ticket || null,
-        intent: answer.intent,
       }]);
       if (answer.suggestions?.length) setSuggestions(answer.suggestions);
+      refreshRecentOrder();
+      pollStaffReplies();
     } catch (e) {
       setError(e.message);
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, pollStaffReplies, refreshRecentOrder]);
 
   const chips = useMemo(() => {
     const base = suggestions.length ? suggestions : FALLBACK_QUICK;
-    const list = contextChip ? [contextChip.label, ...base] : base;
-    return list.slice(0, 5);
+    return (contextChip ? [contextChip.label, ...base] : base).slice(0, 5);
   }, [suggestions, contextChip]);
 
   function onChip(chip) {
@@ -151,6 +226,18 @@ export default function SupportWidget() {
             <button className="support-close" onClick={() => setOpen(false)} aria-label="收起客服">✕</button>
           </header>
 
+          {recentOrder ? (
+            <div className="support-order-strip">
+              <div>
+                <small>最近一笔订单</small>
+                <strong>{recentOrder.order_no || recentOrder.id.slice(0, 8)}</strong>
+              </div>
+              <span className={`status status-${recentOrder.status}`}>{orderStatusText(recentOrder.status)}</span>
+              <span className="support-order-total">{formatPrice(recentOrder.total_cents)}</span>
+              <Link to={`/order/${recentOrder.id}`} className="support-order-link">查看</Link>
+            </div>
+          ) : null}
+
           <div className="support-body">
             {messages.length === 0 ? (
               <div className="message assistant">
@@ -163,8 +250,9 @@ export default function SupportWidget() {
             ) : null}
             {messages.map((message, index) => (
               <div key={index} className={`message ${message.role === 'user' ? 'user' : 'assistant'}`}>
-                <small>{message.role === 'user' ? '你' : '客服'}</small>
-                <p>{message.content}</p>
+                <small>{message.role === 'user' ? '你' : message.staff ? '客服（人工）' : '客服'}</small>
+                <p className={message.staff ? 'staff-reply' : ''}>{message.content}</p>
+                {message.ticketNo ? <div className="support-source">工单 {message.ticketNo} 的人工回复</div> : null}
                 {(message.cards || []).map((card, cardIndex) => (
                   <CardView key={cardIndex} card={card}/>
                 ))}
@@ -195,7 +283,7 @@ export default function SupportWidget() {
             />
             <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>发送</button>
           </form>
-          <p className="support-foot">自动应答基于知识库与实时订单数据；支付与物流为演示流程。</p>
+          <p className="support-foot">自动应答基于知识库与实时订单数据；人工回复会显示在对话里（每 8 秒自动收取）。</p>
         </section>
       ) : null}
 
@@ -207,7 +295,7 @@ export default function SupportWidget() {
       >
         <span className="support-launcher-icon">💬</span>
         <span className="support-launcher-text">在线客服</span>
-        {pulse && !open ? <em className="support-dot"/> : null}
+        {unread > 0 && !open ? <em className="support-unread">{unread}</em> : pulse && !open ? <em className="support-dot"/> : null}
       </button>
     </>
   );

@@ -79,6 +79,11 @@ class SupportMessage(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
 
 
+class TicketReply(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    close: bool = False
+
+
 class ProductCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=200)
@@ -412,6 +417,12 @@ def create_app(database_url=None, llm=True):
         )
         return answer
 
+    @app.get("/api/sessions/{sid}/tickets")
+    def session_tickets(sid: str):
+        """用户侧：看自己这个会话的工单与人工回复（其它会话的工单拿不到）。"""
+        get_session(sid)
+        return {"tickets": store.tickets_for(sid)}
+
     # ---------------- 管理后台 ----------------
 
     @app.post("/api/admin/product-events", status_code=202)
@@ -476,6 +487,35 @@ def create_app(database_url=None, llm=True):
         if closed is None:
             raise HTTPException(404, "Ticket not found")
         return {"ticket": closed}
+
+    @app.post("/api/admin/tickets/{ticket_id}/reply", status_code=200)
+    def admin_reply_ticket(
+        ticket_id: str,
+        body: TicketReply,
+        x_admin_token: str = Header(default=""),
+    ):
+        """人工客服在工单里回复；用户在右下角客服面板里能看到这条回复。"""
+        require_admin(x_admin_token)
+        current = store.ticket(ticket_id)
+        if current is None:
+            raise HTTPException(404, "Ticket not found")
+        updated = store.add_ticket_message(ticket_id, body.message, role="staff")
+        if body.close:
+            updated = store.close_ticket(ticket_id, note="客服回复后关闭（演示）")
+        # 人工回复也要进会话的客服记录，这样后台「客服会话」里能看到完整对话
+        session = store.session(current["session_id"])
+        if session:
+            store.append_support(
+                current["session_id"],
+                {"role": "staff", "content": body.message},
+                session["revision"],
+            )
+        return {"ticket": updated}
+
+    @app.get("/api/admin/conversations")
+    def admin_conversations(x_admin_token: str = Header(default="")):
+        require_admin(x_admin_token)
+        return {"conversations": store.support_conversations()}
 
     @app.post("/api/admin/orders/{order_id}/ship")
     def admin_ship(order_id: str, x_admin_token: str = Header(default="")):

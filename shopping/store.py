@@ -69,6 +69,17 @@ FREE_SHIPPING_CENTS = 9900
 SHIPPING_CENTS = 1000
 
 
+def _normalized_ticket(ticket):
+    """给每条工单消息补一个稳定 id，前端用它去重「哪条回复还没看过」。"""
+    if not ticket:
+        return ticket
+    messages = [
+        {**message, "id": message.get("id") or f"{ticket['no']}-{index}"}
+        for index, message in enumerate(ticket.get("messages") or [])
+    ]
+    return {**ticket, "messages": messages}
+
+
 class Store:
     def __init__(self, url):
         self.engine = create_engine(
@@ -357,7 +368,9 @@ class Store:
             "contact": contact,
             "order_no": order_no,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "messages": messages[-10:],
+            "messages": [
+                {**message, "id": message.get("id") or uuid.uuid4().hex} for message in messages[-10:]
+            ],
             "notes": [],
         }
         with self.engine.begin() as c:
@@ -371,13 +384,77 @@ class Store:
     def tickets(self):
         with self.engine.connect() as c:
             rows = list(c.execute(select(tickets.c.data)).scalars())
-        return sorted(rows, key=lambda t: t.get("created_at", ""), reverse=True)
+        return [_normalized_ticket(t) for t in sorted(rows, key=lambda t: t.get("created_at", ""), reverse=True)]
+
+    def tickets_for(self, session_id):
+        with self.engine.connect() as c:
+            rows = list(
+                c.execute(
+                    select(tickets.c.data).where(tickets.c.session_id == session_id)
+                ).scalars()
+            )
+        return [
+            _normalized_ticket(t)
+            for t in sorted(rows, key=lambda t: t.get("created_at", ""), reverse=True)
+        ]
 
     def ticket(self, ticket_id):
         with self.engine.connect() as c:
-            return c.execute(
+            row = c.execute(
                 select(tickets.c.data).where(tickets.c.id == ticket_id)
             ).scalar()
+        return _normalized_ticket(row)
+
+    def add_ticket_message(self, ticket_id, content, role="staff"):
+        """客服（人工）在工单里回复；用户侧据此在客服面板里看到人工消息。"""
+        with self.engine.begin() as c:
+            row = (
+                c.execute(select(tickets).where(tickets.c.id == ticket_id))
+                .mappings()
+                .first()
+            )
+            if not row:
+                return None
+            data = {**row["data"]}
+            data["messages"] = list(data.get("messages") or []) + [
+                {
+                    "id": uuid.uuid4().hex,
+                    "role": role,
+                    "content": content,
+                    "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
+            ]
+            data["replied_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+            c.execute(
+                update(tickets).where(tickets.c.id == ticket_id).values(data=data)
+            )
+        return _normalized_ticket(data)
+
+    def support_conversations(self, limit=50):
+        """把有客服对话的会话列出来（管理后台的客服会话查询）。"""
+        with self.engine.connect() as c:
+            rows = list(
+                c.execute(select(sessions.c.id, sessions.c.data)).mappings()
+            )
+        conversations = []
+        for row in rows:
+            history = (row["data"] or {}).get("support") or []
+            if not history:
+                continue
+            conversations.append(
+                {
+                    "session_id": row["id"],
+                    "messages": history,
+                    "message_count": len(history),
+                    "last_content": history[-1].get("content", "")[:80],
+                    "last_role": history[-1].get("role"),
+                    "last_at": history[-1].get("at") or "",
+                }
+            )
+        conversations.sort(
+            key=lambda item: (item["last_at"], item["session_id"]), reverse=True
+        )
+        return conversations[:limit]
 
     def close_ticket(self, ticket_id, note=None):
         with self.engine.begin() as c:
@@ -396,11 +473,12 @@ class Store:
             return data
 
     def append_support(self, session_id, exchange, revision):
-        """把客服对话存进会话里，方便工单带上上下文。"""
+        """把客服对话存进会话里，方便工单带上上下文；带上时间戳供后台排序。"""
         current = self.session(session_id)
         if current is None:
             return None
-        history = (current.get("support") or []) + [exchange]
+        entry = {**exchange, "at": datetime.now(UTC).isoformat(timespec="milliseconds")}
+        history = (current.get("support") or []) + [entry]
         return self.save_session(
             session_id,
             {
